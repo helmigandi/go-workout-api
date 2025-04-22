@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"github.com/helmigandi/go-workout-api/internal/app"
 	"net/http"
@@ -8,21 +9,27 @@ import (
 )
 
 func main() {
+	var port int
+	flag.IntVar(&port, "port", 8080, "port to listen on")
+	flag.Parse()
+	fmt.Printf("Listening on port %d\n", port)
+
 	app, err := app.NewApplication()
 	if err != nil {
 		panic(err)
 	}
 
-	app.Logger.Println("Application are running!")
-
 	http.HandleFunc("/health", HealthCheck)
-	
+
 	server := &http.Server{
-		Addr:         ":8080",
+		Addr:         fmt.Sprintf(":%d", port),
 		IdleTimeout:  time.Minute,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}
+
+	app.Logger.Printf("Starting server on port %d", port)
+	
 	err = server.ListenAndServe()
 	if err != nil {
 		app.Logger.Fatal(err)
