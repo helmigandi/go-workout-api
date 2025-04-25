@@ -1,25 +1,130 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/go-chi/chi/v5"
 	"github.com/helmigandi/go-workout-api/internal/store"
+	"github.com/helmigandi/go-workout-api/internal/utils"
+	"log"
 	"net/http"
 	"strconv"
 )
 
 type WorkoutHandler struct {
 	workoutStore store.WorkoutStore
+	logger       *log.Logger
 }
 
-func NewWorkoutHandler(workoutStore store.WorkoutStore) *WorkoutHandler {
+func NewWorkoutHandler(workoutStore store.WorkoutStore, logger *log.Logger) *WorkoutHandler {
 	return &WorkoutHandler{
 		workoutStore: workoutStore,
+		logger:       logger,
 	}
 }
 
 func (wh *WorkoutHandler) HandleGetWorkoutByID(w http.ResponseWriter, r *http.Request) {
+	workoutID, err := utils.ReadIDParam(r)
+	if err != nil {
+		wh.logger.Printf("ERROR: read id param: %v\n", err)
+		utils.WriteJSON(w, http.StatusBadRequest, utils.Envelope{"error": "invalid workout id"})
+		return
+	}
+
+	workout, err := wh.workoutStore.GetWorkoutByID(workoutID)
+	if err != nil {
+		wh.logger.Printf("ERROR: getWorkoutByID: %v\n", err)
+		utils.WriteJSON(w, http.StatusInternalServerError, utils.Envelope{"error": "internal server error"})
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, utils.Envelope{"workout": workout})
+}
+
+func (wh *WorkoutHandler) HandleCreateWorkout(w http.ResponseWriter, r *http.Request) {
+	var workout store.Workout
+	err := json.NewDecoder(r.Body).Decode(&workout)
+	if err != nil {
+		wh.logger.Printf("ERROR: decoding create workout: %v\n", err)
+		utils.WriteJSON(w, http.StatusBadRequest, utils.Envelope{"error": "invalid request send"})
+		return
+	}
+
+	createdWorkout, err := wh.workoutStore.CreateWorkout(&workout)
+	if err != nil {
+		wh.logger.Printf("ERROR: create workout: %v\n", err)
+		utils.WriteJSON(w, http.StatusInternalServerError, utils.Envelope{"error": "failed to create workout"})
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusCreated, utils.Envelope{"workout": createdWorkout})
+}
+
+func (wh *WorkoutHandler) HandleUpdateWorkout(w http.ResponseWriter, r *http.Request) {
+	workoutID, err := utils.ReadIDParam(r)
+	if err != nil {
+		wh.logger.Printf("ERROR: read id param: %v\n", err)
+		utils.WriteJSON(w, http.StatusBadRequest, utils.Envelope{"error": "invalid workout id"})
+		return
+	}
+
+	// find existing workout
+	existWorkout, err := wh.workoutStore.GetWorkoutByID(workoutID)
+	if err != nil {
+		wh.logger.Printf("ERROR: getWorkoutByID: %v\n", err)
+		utils.WriteJSON(w, http.StatusInternalServerError, utils.Envelope{"error": "internal server error"})
+		return
+	}
+
+	if existWorkout == nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	var updateWorkoutRequest struct {
+		Title           *string              `json:"title"`
+		Description     *string              `json:"description"`
+		DurationMinutes *int                 `json:"duration_minutes"`
+		CaloriesBurned  *int                 `json:"calories_burned"`
+		Entries         []store.WorkoutEntry `json:"entries"`
+	}
+
+	err = json.NewDecoder(r.Body).Decode(&updateWorkoutRequest)
+	if err != nil {
+		wh.logger.Printf("ERROR: decodingUpdateRequest: %v\n", err)
+		utils.WriteJSON(w, http.StatusBadRequest, utils.Envelope{"error": "invalid request send"})
+		return
+	}
+
+	if updateWorkoutRequest.Title != nil {
+		existWorkout.Title = *updateWorkoutRequest.Title
+	}
+	if updateWorkoutRequest.Description != nil {
+		existWorkout.Description = *updateWorkoutRequest.Description
+	}
+	if updateWorkoutRequest.DurationMinutes != nil {
+		existWorkout.DurationMinutes = *updateWorkoutRequest.DurationMinutes
+	}
+	if updateWorkoutRequest.CaloriesBurned != nil {
+		existWorkout.CaloriesBurned = *updateWorkoutRequest.CaloriesBurned
+	}
+	if updateWorkoutRequest.Entries != nil {
+		existWorkout.Entries = updateWorkoutRequest.Entries
+	}
+
+	err = wh.workoutStore.UpdateWorkout(existWorkout)
+	if err != nil {
+		wh.logger.Printf("ERROR: updatingWorkout: %v\n", err)
+		utils.WriteJSON(w, http.StatusInternalServerError, utils.Envelope{"error": "internal server error"})
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, utils.Envelope{"workout": existWorkout})
+}
+
+func (wh *WorkoutHandler) HandleDeleteWorkout(w http.ResponseWriter, r *http.Request) {
 	paramsWorkoutID := chi.URLParam(r, "id")
 	if paramsWorkoutID == "" {
 		http.NotFound(w, r)
@@ -32,25 +137,17 @@ func (wh *WorkoutHandler) HandleGetWorkoutByID(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	fmt.Fprintf(w, "Workout ID: %d\n", workoutID)
-}
-
-func (wh *WorkoutHandler) HandleCreateWorkout(w http.ResponseWriter, r *http.Request) {
-	var workout store.Workout
-	err := json.NewDecoder(r.Body).Decode(&workout)
-	if err != nil {
-		http.Error(w, "Failed to decode workout", http.StatusInternalServerError)
+	err = wh.workoutStore.DeleteWorkout(workoutID)
+	if errors.Is(err, sql.ErrNoRows) {
+		http.Error(w, "Workout not found", http.StatusNotFound)
 		return
 	}
 
-	createdWorkout, err := wh.workoutStore.CreateWorkout(&workout)
 	if err != nil {
 		fmt.Println(err)
-		http.Error(w, "Failed to create workout", http.StatusInternalServerError)
+		http.Error(w, "Failed to delete workout", http.StatusInternalServerError)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(createdWorkout)
+	w.WriteHeader(http.StatusNoContent)
 }
